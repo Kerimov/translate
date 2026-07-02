@@ -37,6 +37,20 @@ def _parse_device(name: str) -> int | None:
     return int(raw) if raw else None
 
 
+def _parse_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if raw in ("true", "1", "yes"):
+        return True
+    if raw in ("false", "0", "no"):
+        return False
+    return default
+
+
+def _parse_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    return int(raw) if raw else default
+
+
 @dataclass
 class Settings:
     deepseek_api_key: str
@@ -49,20 +63,31 @@ class Settings:
     show_original: bool
     enable_outgoing: bool
     tts_voice: str
+    segment_silence_frames: int
+    segment_min_speech_frames: int
 
     @classmethod
     def load(cls) -> "Settings":
+        fast_mode = _parse_bool("FAST_MODE", False)
         # Backward compat: AUDIO_INPUT_DEVICE → TEAM_AUDIO_DEVICE
         team_device = _parse_device("TEAM_AUDIO_DEVICE") or _parse_device("AUDIO_INPUT_DEVICE")
+        default_model_in = "base.en" if fast_mode else "small.en"
+        default_model_out = "base" if fast_mode else "small"
         return cls(
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             team_audio_device=team_device,
             team_loopback=default_team_loopback(),
             mic_input_device=_parse_device("MIC_INPUT_DEVICE"),
             virtual_mic_device=_parse_device("VIRTUAL_MIC_DEVICE"),
-            whisper_model_in=os.getenv("WHISPER_MODEL_IN", os.getenv("WHISPER_MODEL", "small.en")),
-            whisper_model_out=os.getenv("WHISPER_MODEL_OUT", "small"),
+            whisper_model_in=os.getenv("WHISPER_MODEL_IN", os.getenv("WHISPER_MODEL", default_model_in)),
+            whisper_model_out=os.getenv("WHISPER_MODEL_OUT", default_model_out),
             show_original=os.getenv("SHOW_ORIGINAL", "true").lower() == "true",
             enable_outgoing=os.getenv("ENABLE_OUTGOING", "true").lower() == "true",
             tts_voice=os.getenv("TTS_VOICE", "en-US-GuyNeural"),
+            segment_silence_frames=_parse_int(
+                "SEGMENT_SILENCE_FRAMES", 8 if fast_mode else 12
+            ),
+            segment_min_speech_frames=_parse_int(
+                "SEGMENT_MIN_SPEECH_FRAMES", 4 if fast_mode else 5
+            ),
         )

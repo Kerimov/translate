@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+from collections.abc import Callable
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -25,19 +26,21 @@ def _read_env() -> dict[str, str]:
 
 
 def _write_env(values: dict[str, str]) -> None:
+    existing = _read_env()
+    merged = {**existing, **values}
     lines = [
-        f"DEEPSEEK_API_KEY={values['DEEPSEEK_API_KEY']}",
+        f"DEEPSEEK_API_KEY={merged['DEEPSEEK_API_KEY']}",
         "",
-        "TEAM_LOOPBACK=true",
-        f"TEAM_AUDIO_DEVICE={values.get('TEAM_AUDIO_DEVICE', '')}",
-        f"MIC_INPUT_DEVICE={values.get('MIC_INPUT_DEVICE', '')}",
-        f"VIRTUAL_MIC_DEVICE={values.get('VIRTUAL_MIC_DEVICE', '')}",
+        f"TEAM_LOOPBACK={merged.get('TEAM_LOOPBACK', 'true')}",
+        f"TEAM_AUDIO_DEVICE={merged.get('TEAM_AUDIO_DEVICE', '')}",
+        f"MIC_INPUT_DEVICE={merged.get('MIC_INPUT_DEVICE', '')}",
+        f"VIRTUAL_MIC_DEVICE={merged.get('VIRTUAL_MIC_DEVICE', '')}",
         "",
-        "WHISPER_MODEL_IN=small.en",
-        "WHISPER_MODEL_OUT=small",
-        "TTS_VOICE=en-US-GuyNeural",
-        f"ENABLE_OUTGOING={values.get('ENABLE_OUTGOING', 'true')}",
-        "SHOW_ORIGINAL=true",
+        f"WHISPER_MODEL_IN={merged.get('WHISPER_MODEL_IN', 'small.en')}",
+        f"WHISPER_MODEL_OUT={merged.get('WHISPER_MODEL_OUT', 'small')}",
+        f"TTS_VOICE={merged.get('TTS_VOICE', 'en-US-GuyNeural')}",
+        f"ENABLE_OUTGOING={merged.get('ENABLE_OUTGOING', 'true')}",
+        f"SHOW_ORIGINAL={merged.get('SHOW_ORIGINAL', 'true')}",
         "",
     ]
     ENV_PATH.write_text("\n".join(lines), encoding="utf-8")
@@ -47,6 +50,55 @@ def _needs_setup() -> bool:
     env = _read_env()
     key = env.get("DEEPSEEK_API_KEY", "").strip()
     return not key or key == "your_api_key_here"
+
+
+def _setup_entry_clipboard(entry: tk.Entry) -> Callable[[], str | None]:
+    """Clipboard shortcuts that work on Russian Windows keyboard layouts."""
+
+    def paste(_event=None):
+        try:
+            text = entry.clipboard_get()
+        except tk.TclError:
+            return "break"
+        if entry.selection_present():
+            entry.delete("sel.first", "sel.last")
+        entry.insert(entry.index("insert"), text)
+        return "break"
+
+    def copy(_event=None):
+        try:
+            if entry.selection_present():
+                entry.clipboard_clear()
+                entry.clipboard_append(entry.selection_get())
+        except tk.TclError:
+            pass
+        return "break"
+
+    def cut(_event=None):
+        copy()
+        if entry.selection_present():
+            entry.delete("sel.first", "sel.last")
+        return "break"
+
+    def on_ctrl_key(event: tk.Event) -> str | None:
+        if event.keycode == 86:
+            return paste()
+        if event.keycode == 67:
+            return copy()
+        if event.keycode == 88:
+            return cut()
+        return None
+
+    entry.bind("<Control-KeyPress>", on_ctrl_key)
+    entry.bind("<Shift-Insert>", paste)
+    entry.bind("<Control-Insert>", copy)
+
+    menu = tk.Menu(entry, tearoff=0)
+    menu.add_command(label="Вставить", command=paste)
+    menu.add_command(label="Копировать", command=copy)
+    menu.add_command(label="Вырезать", command=cut)
+    entry.bind("<Button-3>", lambda event: menu.tk_popup(event.x_root, event.y_root))
+    return paste
 
 
 def _launch_translator() -> None:
@@ -93,49 +145,92 @@ class SetupWindow:
         ).pack(anchor="w", pady=(4, 16))
 
         tk.Label(frame, text="DeepSeek API Key", fg="#cccccc", bg="#1a1a1a").pack(anchor="w")
-        self.api_key = tk.Entry(frame, width=72, show="*", font=("Segoe UI", 10))
-        self.api_key.pack(fill="x", pady=(4, 12))
+        key_row = tk.Frame(frame, bg="#1a1a1a")
+        key_row.pack(fill="x", pady=(4, 0))
+        self.api_key = tk.Entry(key_row, show="*", font=("Segoe UI", 10))
+        self.api_key.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        paste_key = _setup_entry_clipboard(self.api_key)
+        tk.Button(
+            key_row,
+            text="Вставить",
+            command=paste_key,
+            bg="#333333",
+            fg="#ffffff",
+            activebackground="#444444",
+            activeforeground="#ffffff",
+            font=("Segoe UI", 9),
+            padx=10,
+            pady=2,
+            relief="flat",
+            cursor="hand2",
+        ).pack(side="right")
+        tk.Label(
+            frame,
+            text="Вставка: кнопка «Вставить», Ctrl+V или Shift+Ins",
+            fg="#666666",
+            bg="#1a1a1a",
+            font=("Segoe UI", 8),
+        ).pack(anchor="w", pady=(2, 12))
 
         env = _read_env()
         if env.get("DEEPSEEK_API_KEY"):
             self.api_key.insert(0, env["DEEPSEEK_API_KEY"])
 
-        self.mic_var = self._combo(frame, "Ваш микрофон", self.inputs, self.detect.get("mic"))
-        self.team_var = self._combo(frame, "Звук игры (наушники)", self.outputs, self.detect.get("team"))
-        self.cable_var = self._combo(
-            frame,
-            "VB-Cable Input (голос в Steam)",
-            self.outputs,
-            self.detect.get("virtual_mic"),
-        )
+        outgoing_enabled = env.get("ENABLE_OUTGOING", "true").lower() in ("true", "1", "yes")
+        self.outgoing_var = tk.BooleanVar(value=outgoing_enabled)
 
-        self.outgoing_var = tk.BooleanVar(value=True)
+        self.team_var = self._combo(frame, "Звук игры (наушники)", self.outputs, self.detect.get("team"))
+
         tk.Checkbutton(
             frame,
-            text="Переводить мой голос на английский (RU → EN)",
+            text="Переводить мой голос на английский (RU → EN в Steam)",
             variable=self.outgoing_var,
+            command=self._toggle_outgoing_fields,
             fg="#cccccc",
             bg="#1a1a1a",
             selectcolor="#333333",
             activebackground="#1a1a1a",
             activeforeground="#ffffff",
             font=("Segoe UI", 10),
-        ).pack(anchor="w", pady=(8, 8))
+        ).pack(anchor="w", pady=(8, 4))
+
+        self.mode_hint = tk.Label(
+            frame,
+            text="",
+            fg="#888888",
+            bg="#1a1a1a",
+            justify="left",
+            font=("Segoe UI", 9),
+        )
+        self.mode_hint.pack(anchor="w", pady=(0, 8))
+
+        self.outgoing_extra = tk.Frame(frame, bg="#1a1a1a")
+        self.mic_frame = tk.Frame(self.outgoing_extra, bg="#1a1a1a")
+        self.mic_frame.pack(fill="x")
+        self.mic_var = self._combo(self.mic_frame, "Ваш микрофон", self.inputs, self.detect.get("mic"))
+        self.cable_var = self._combo(
+            self.mic_frame,
+            "VB-Cable Input (голос в Steam)",
+            self.outputs,
+            self.detect.get("virtual_mic"),
+        )
 
         note = (
-            "Нужно один раз:\n"
+            "Для режима с голосом в Steam:\n"
             "1. Установить VB-Audio Virtual Cable (vb-audio.com/Cable)\n"
             "2. Steam → Settings → Voice → CABLE Output (VB-Audio)\n"
             "3. CS2 в оконном / borderless режиме"
         )
-        tk.Label(
-            frame,
+        self.note_label = tk.Label(
+            self.outgoing_extra,
             text=note,
             fg="#888888",
             bg="#1a1a1a",
             justify="left",
             font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(4, 12))
+        )
+        self.note_label.pack(anchor="w", pady=(4, 0))
+        self._toggle_outgoing_fields()
 
         btn_row = tk.Frame(frame, bg="#1a1a1a")
         btn_row.pack(fill="x")
@@ -157,11 +252,24 @@ class SetupWindow:
         if not self.detect.get("virtual_mic"):
             tk.Label(
                 frame,
-                text="⚠ VB-Cable не найден — установите перед игрой",
+                text="⚠ VB-Cable не найден — нужен только для перевода вашего голоса",
                 fg="#fbbf24",
                 bg="#1a1a1a",
                 font=("Segoe UI", 9, "bold"),
             ).pack(anchor="w", pady=(12, 0))
+
+    def _toggle_outgoing_fields(self) -> None:
+        enabled = self.outgoing_var.get()
+        if enabled:
+            self.outgoing_extra.pack(fill="x", pady=(0, 12))
+            self.mode_hint.config(
+                text="Включён двусторонний режим: субтитры команды + ваш голос на английском."
+            )
+        else:
+            self.outgoing_extra.pack_forget()
+            self.mode_hint.config(
+                text="Только субтитры: переводите голос команды, свой микрофон не трогаем."
+            )
 
     def _combo(
         self,

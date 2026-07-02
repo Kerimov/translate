@@ -19,9 +19,14 @@ class App:
             enable_outgoing=settings.enable_outgoing,
         )
         self.stt_in = SpeechToText(settings.whisper_model_in, label="stt-in")
-        self.stt_out = SpeechToText(settings.whisper_model_out, label="stt-out")
         self.translator = Translator(settings.deepseek_api_key)
-        self.tts = TextToSpeech(settings.tts_voice, settings.virtual_mic_device)
+        self.stt_out: SpeechToText | None = None
+        self.tts: TextToSpeech | None = None
+        self.mic_capture: AudioCapture | None = None
+
+        if settings.enable_outgoing:
+            self.stt_out = SpeechToText(settings.whisper_model_out, label="stt-out")
+            self.tts = TextToSpeech(settings.tts_voice, settings.virtual_mic_device)
 
         self._incoming_lock = threading.Lock()
         self._outgoing_lock = threading.Lock()
@@ -31,12 +36,17 @@ class App:
             device=settings.team_audio_device,
             label="team",
             loopback=settings.team_loopback,
+            silence_frames=settings.segment_silence_frames,
+            min_speech_frames=settings.segment_min_speech_frames,
         )
-        self.mic_capture = AudioCapture(
-            self._on_mic_segment,
-            device=settings.mic_input_device,
-            label="mic",
-        )
+        if settings.enable_outgoing:
+            self.mic_capture = AudioCapture(
+                self._on_mic_segment,
+                device=settings.mic_input_device,
+                label="mic",
+                silence_frames=settings.segment_silence_frames,
+                min_speech_frames=settings.segment_min_speech_frames,
+            )
 
     def _on_team_segment(self, audio) -> None:
         if not self._incoming_lock.acquire(blocking=False):
@@ -44,10 +54,12 @@ class App:
 
         def work() -> None:
             try:
+                self.overlay.show_incoming_progress("Распознаю...")
                 text = self.stt_in.transcribe(audio, language="en")
                 if not text:
                     return
                 print(f"[team en] {text}")
+                self.overlay.show_incoming(text, "…")
                 translated = self.translator.translate(text, direction="en_to_ru")
                 print(f"[team ru] {translated}")
                 self.overlay.show_incoming(text, translated)
@@ -67,10 +79,12 @@ class App:
 
         def work() -> None:
             try:
+                assert self.stt_out is not None and self.tts is not None
                 text = self.stt_out.transcribe(audio, language="ru")
                 if not text:
                     return
                 print(f"[you ru] {text}")
+                self.overlay.show_outgoing(text, "…")
                 translated = self.translator.translate(text, direction="ru_to_en")
                 print(f"[you en] {translated}")
                 self.overlay.show_outgoing(text, translated)
@@ -85,6 +99,10 @@ class App:
 
     def run(self) -> None:
         print("[app] Starting. Press Escape on overlay to quit.")
+        if self.settings.enable_outgoing:
+            print("[app] Режим: субтитры команды + перевод вашего голоса")
+        else:
+            print("[app] Режим: только субтитры команды (ваш голос не переводится)")
         if self.settings.team_loopback:
             if is_windows():
                 print("[app] Team audio: WASAPI loopback (game/system sound)")
@@ -99,13 +117,13 @@ class App:
             elif is_macos():
                 print("       Set it to BlackHole output so Steam can use it as mic.")
         self.team_capture.start()
-        if self.settings.enable_outgoing:
+        if self.settings.enable_outgoing and self.mic_capture is not None:
             self.mic_capture.start()
         try:
             self.overlay.run()
         finally:
             self.team_capture.stop()
-            if self.settings.enable_outgoing:
+            if self.mic_capture is not None:
                 self.mic_capture.stop()
             self.translator.close()
 

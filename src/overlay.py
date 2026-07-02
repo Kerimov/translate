@@ -98,6 +98,9 @@ class SubtitleOverlay:
             SubtitleUpdate("incoming", original, translated, self.show_original)
         )
 
+    def show_incoming_progress(self, message: str) -> None:
+        self._queue.put(SubtitleUpdate("incoming_progress", "", message, False))
+
     def show_outgoing(self, original: str, translated: str) -> None:
         self._queue.put(
             SubtitleUpdate("outgoing", original, translated, True)
@@ -122,6 +125,9 @@ class SubtitleOverlay:
                     else:
                         self.original_label.config(text="")
                     self.incoming_label.config(text=update.translated or "...")
+                elif update.kind == "incoming_progress":
+                    self.original_label.config(text="")
+                    self.incoming_label.config(text=update.translated)
                 elif update.kind == "outgoing" and self.outgoing_label is not None:
                     if update.original:
                         self.outgoing_label.config(

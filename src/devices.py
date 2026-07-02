@@ -49,9 +49,50 @@ def default_output_device() -> DeviceOption | None:
     return int(index), info["name"]
 
 
+def _is_virtual_cable_output(name: str) -> bool:
+    lower = name.lower()
+    return "cable input" in lower or "cable in 16ch" in lower
+
+
+def is_virtual_cable_output(name: str) -> bool:
+    return _is_virtual_cable_output(name)
+
+
+def _wasapi_output_devices() -> list[DeviceOption]:
+    wasapi_index = None
+    for index, api in enumerate(sd.query_hostapis()):
+        if "wasapi" in api["name"].lower():
+            wasapi_index = index
+            break
+    if wasapi_index is None:
+        return []
+
+    result: list[DeviceOption] = []
+    for index, device in enumerate(sd.query_devices()):
+        if device["hostapi"] == wasapi_index and device["max_output_channels"] > 0:
+            result.append((index, device["name"]))
+    return result
+
+
+def team_output_device() -> DeviceOption | None:
+    """Output device for game audio loopback (WASAPI, not VB-Cable)."""
+    for index, name in _wasapi_output_devices():
+        if not _is_virtual_cable_output(name):
+            return index, name
+
+    default_out = default_output_device()
+    if default_out is not None and not _is_virtual_cable_output(default_out[1]):
+        return default_out
+
+    for index, name in list_output_devices():
+        if not _is_virtual_cable_output(name):
+            return index, name
+    return default_out
+
+
 def autodetect_windows() -> dict[str, DeviceOption | None]:
     mic = default_input_device()
-    team = default_output_device()
+    team = team_output_device()
     cable = find_device(
         ["cable input", "vb-audio cable input"],
         kind="output",

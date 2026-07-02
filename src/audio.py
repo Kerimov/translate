@@ -9,6 +9,7 @@ import numpy as np
 import sounddevice as sd
 
 from src.config import CHANNELS, FRAME_MS, SAMPLE_RATE, FRAME_SAMPLES
+from src.devices import is_virtual_cable_output
 from src.platform_util import is_macos, is_windows, resample_audio
 
 
@@ -20,8 +21,8 @@ class SpeechSegmenter:
         on_segment: Callable[[np.ndarray], None],
         *,
         energy_threshold: float = 0.012,
-        silence_frames: int = 18,
-        min_speech_frames: int = 8,
+        silence_frames: int = 12,
+        min_speech_frames: int = 5,
         max_frames: int = 500,
     ) -> None:
         self.on_segment = on_segment
@@ -65,16 +66,71 @@ class SpeechSegmenter:
         self._in_speech = False
 
 
+def _wasapi_hostapi_index() -> int | None:
+    for index, api in enumerate(sd.query_hostapis()):
+        if "wasapi" in api["name"].lower():
+            return index
+    return None
+
+
+def _is_loopback_device(index: int) -> bool:
+    name = sd.query_devices(index)["name"].lower()
+    if "[loopback]" in name:
+        return True
+    try:
+        return bool(sd._lib.PaWasapi_IsLoopback(index))
+    except Exception:
+        return False
+
+
+def _find_loopback_for_output(output_index: int) -> dict | None:
+    output = sd.query_devices(output_index)
+    output_name = output["name"]
+    wasapi_index = _wasapi_hostapi_index()
+
+    for index, device in enumerate(sd.query_devices()):
+        if device["max_input_channels"] <= 0:
+            continue
+        if wasapi_index is not None and device["hostapi"] != wasapi_index:
+            continue
+        if not _is_loopback_device(index):
+            continue
+        if output_name in device["name"] or device["name"].startswith(output_name):
+            return sd.query_devices(index)
+
+    for index, device in enumerate(sd.query_devices()):
+        if device["max_input_channels"] > 0 and _is_loopback_device(index):
+            return sd.query_devices(index)
+
+    return None
+
+
 def _resolve_loopback_device(device: int | None) -> tuple[int, int, int]:
     """Return (device_index, sample_rate, channels) for WASAPI loopback capture."""
     if device is None:
-        info = sd.query_devices(kind="output")
+        output_info = sd.query_devices(kind="output")
     else:
-        info = sd.query_devices(device)
+        output_info = sd.query_devices(device)
 
-    index = info["index"]
-    sample_rate = int(info["default_samplerate"])
-    channels = min(2, max(1, info["max_output_channels"]))
+    loopback = _find_loopback_for_output(int(output_info["index"]))
+    if loopback is None:
+        output_name = output_info["name"]
+        if is_virtual_cable_output(output_name):
+            raise RuntimeError(
+                "TEAM_AUDIO_DEVICE указывает на VB-Cable Input — это устройство для "
+                "голоса в Steam, а не для захвата звука игры. "
+                "Запустите настройку: python launcher.py --setup "
+                "и выберите наушники/колонки в поле «Звук игры»."
+            )
+        raise RuntimeError(
+            "WASAPI loopback не найден для "
+            f"'{output_name}'. Перезапустите CS2 Translate.bat "
+            "(установит PortAudio с loopback) или укажите другое устройство вывода."
+        )
+
+    index = int(loopback["index"])
+    sample_rate = int(loopback["default_samplerate"])
+    channels = min(2, max(1, loopback["max_input_channels"]))
     return index, sample_rate, channels
 
 
@@ -86,6 +142,8 @@ class AudioCapture:
         device: int | None = None,
         label: str = "audio",
         loopback: bool = False,
+        silence_frames: int = 12,
+        min_speech_frames: int = 5,
     ) -> None:
         self.device = device
         self.label = label
@@ -98,7 +156,11 @@ class AudioCapture:
                 audio = resample_audio(audio, self.capture_rate, SAMPLE_RATE)
             on_segment(audio)
 
-        self.segmenter = SpeechSegmenter(deliver)
+        self.segmenter = SpeechSegmenter(
+            deliver,
+            silence_frames=silence_frames,
+            min_speech_frames=min_speech_frames,
+        )
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: sd.InputStream | None = None
         self._worker: threading.Thread | None = None
@@ -128,7 +190,6 @@ class AudioCapture:
                     "samplerate": sample_rate,
                     "channels": channels,
                     "blocksize": blocksize,
-                    "extra_settings": sd.WasapiSettings(loopback=True),
                 }
             )
             print(

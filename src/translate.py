@@ -29,6 +29,8 @@ class Translator:
             json={
                 "model": DEEPSEEK_MODEL,
                 "stream": False,
+                "temperature": 0,
+                "max_tokens": 64,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},

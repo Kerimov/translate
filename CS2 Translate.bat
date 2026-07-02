@@ -51,6 +51,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if not exist "vendor\libportaudio64bit.dll" (
+    python scripts\enable_wasapi_loopback.py
+)
+if exist "vendor\libportaudio64bit.dll" (
+    copy /Y "vendor\libportaudio64bit.dll" ".venv\Lib\site-packages\_sounddevice_data\portaudio-binaries\libportaudio64bit.dll" >nul
+)
+
 python launcher.py
 if errorlevel 1 (
     echo.
