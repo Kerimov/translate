@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import queue
+import sys
 from collections import deque
 
 import tkinter as tk
@@ -13,6 +15,56 @@ class SubtitleUpdate:
     original: str
     translated: str
     show_original: bool
+
+
+def _make_clickthrough(window: tk.Misc) -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)
+        ctypes.windll.user32.SetWindowLongW(hwnd, -20, style | 0x80000 | 0x20)
+    except Exception:
+        pass
+
+
+def _create_crosshair_window(root: tk.Tk) -> tk.Toplevel:
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    cx, cy = screen_w // 2, screen_h // 2
+
+    win = tk.Toplevel(root)
+    win.overrideredirect(True)
+    win.attributes("-topmost", True)
+    win.attributes("-transparentcolor", "black")
+    win.configure(bg="black")
+    win.geometry(f"{screen_w}x{screen_h}+0+0")
+
+    canvas = tk.Canvas(
+        win,
+        width=screen_w,
+        height=screen_h,
+        bg="black",
+        highlightthickness=0,
+        bd=0,
+    )
+    canvas.pack()
+
+    color = os.getenv("CROSSHAIR_COLOR", "#00ff00")
+    size = int(os.getenv("CROSSHAIR_SIZE", "10"))
+    gap = int(os.getenv("CROSSHAIR_GAP", "3"))
+    width = int(os.getenv("CROSSHAIR_WIDTH", "2"))
+
+    canvas.create_line(cx - size - gap, cy, cx - gap, cy, fill=color, width=width)
+    canvas.create_line(cx + gap, cy, cx + size + gap, cy, fill=color, width=width)
+    canvas.create_line(cx, cy - size - gap, cx, cy - gap, fill=color, width=width)
+    canvas.create_line(cx, cy + gap, cx, cy + size + gap, fill=color, width=width)
+
+    win.update_idletasks()
+    _make_clickthrough(win)
+    return win
 
 
 class SubtitleOverlay:
@@ -104,6 +156,11 @@ class SubtitleOverlay:
         else:
             self.outgoing_label = None
 
+        self._crosshair_win: tk.Toplevel | None = None
+        show_crosshair = os.getenv("SHOW_CROSSHAIR", "true").lower() in ("true", "1", "yes")
+        if show_crosshair:
+            self._crosshair_win = _create_crosshair_window(self.root)
+
         self.root.bind("<Escape>", lambda _e: self.stop())
         self.root.after(50, self._poll)
 
@@ -124,6 +181,12 @@ class SubtitleOverlay:
         self._queue.put(SubtitleUpdate("error", "", message, False))
 
     def stop(self) -> None:
+        if self._crosshair_win is not None:
+            try:
+                self._crosshair_win.destroy()
+            except tk.TclError:
+                pass
+            self._crosshair_win = None
         self._queue.put(None)
 
     def _poll(self) -> None:
