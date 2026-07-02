@@ -7,78 +7,82 @@
 ## Как это работает
 
 ```
-Входящий:  Голос из игры → Whisper (EN) → DeepSeek → субтитры RU
-Исходящий: Ваш микрофон  → Whisper (RU) → DeepSeek → Edge TTS (EN) → BlackHole → Steam
+Входящий:  Звук игры → Whisper (EN) → DeepSeek → субтитры RU
+Исходящий: Ваш микрофон → Whisper (RU) → DeepSeek → Edge TTS (EN) → VB-Cable → Steam
 ```
 
 ## Требования
 
-- macOS
+- **Windows 10/11** (основная платформа для CS2)
 - Python 3.9+
-- [BlackHole](https://existential.audio/blackhole/) (бесплатный виртуальный аудиокабель)
+- [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) (бесплатный виртуальный аудиокабель)
 - API-ключ [DeepSeek](https://platform.deepseek.com/)
 
-## Установка
+> macOS тоже поддерживается — см. раздел [macOS](#macos) внизу.
 
-```bash
+## Установка (Windows)
+
+```powershell
 cd translate
-python3 -m venv .venv
-source .venv/bin/activate
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
+copy .env.example .env
 # Вставьте DEEPSEEK_API_KEY в .env
 ```
 
-## Настройка аудио для CS2 (macOS)
+Или просто двойной клик по `run.bat` (создаст venv и запустит).
 
-### 1. Установите BlackHole 2ch
+## Настройка аудио для CS2 (Windows)
 
-Скачайте с [existential.audio/blackhole](https://existential.audio/blackhole/).
+### 1. Установите VB-Audio Virtual Cable
 
-### 2. Multi-Output для звука игры
+Скачайте с [vb-audio.com/Cable](https://vb-audio.com/Cable/) и перезагрузите ПК.
 
-1. Откройте **Audio MIDI Setup**
-2. **+** → **Create Multi-Output Device**
-3. Включите **BlackHole 2ch** + ваши **наушники**
-4. В системных настройках звука выберите Multi-Output как устройство вывода
+Появятся два устройства:
+- **CABLE Input** — куда приложение отправляет переведённый английский голос
+- **CABLE Output** — что Steam использует как микрофон
 
-Так вы слышите игру, а приложение захватывает голос команды через BlackHole.
+### 2. Захват голоса команды (WASAPI loopback)
 
-### 3. Виртуальный микрофон для Steam
+На Windows **не нужен** отдельный аудиокабель для входящего звука — приложение захватывает звук игры напрямую через **WASAPI loopback** (по умолчанию `TEAM_LOOPBACK=true`).
 
-1. В `.env` укажите **BlackHole output** как `VIRTUAL_MIC_DEVICE`
-2. В **Steam → Settings → Voice → Voice Input Device** выберите **BlackHole 2ch**
-3. Говорите в **реальный микрофон** — приложение переводит и отправляет английский голос в BlackHole, Steam его транслирует
+Вы продолжаете слышать игру в наушниках как обычно.
 
-### 4. Найдите индексы устройств
+### 3. Найдите индексы устройств
 
-```bash
+```powershell
+.venv\Scripts\activate
 python -m src.main --list-devices
 ```
 
 Пример `.env`:
 
+```env
+TEAM_LOOPBACK=true
+# TEAM_AUDIO_DEVICE=4    # наушники (если не default output)
+MIC_INPUT_DEVICE=1       # ваш микрофон
+VIRTUAL_MIC_DEVICE=5     # CABLE Input (VB-Audio)
 ```
-TEAM_AUDIO_DEVICE=2    # BlackHole input (голос команды из игры)
-MIC_INPUT_DEVICE=0     # Ваш микрофон
-VIRTUAL_MIC_DEVICE=3   # BlackHole output (Steam mic)
-```
 
-### 5. CS2 / Steam
+### 4. Steam / CS2
 
-- CS2 в **оконном** или **borderless** режиме — иначе оверлей может не быть виден
-- Voice chat включён в CS2
-- **Push-to-talk** в Steam рекомендуется — меньше лишнего перевода
+1. **Steam → Settings → Voice → Voice Input Device → CABLE Output (VB-Audio Virtual Cable)**
+2. Voice chat включён в CS2
+3. **Push-to-talk** в Steam — меньше лишнего перевода
+4. CS2 в **оконном** или **borderless** режиме — оверлей поверх игры
 
-## Запуск
+## Запуск (Windows)
 
-```bash
-source .venv/bin/activate
+```powershell
+.venv\Scripts\activate
 python -m src.main
 ```
 
+Или `run.bat`.
+
 - Субтитры команды — белым, ваш перевод — голубым
-- **Escape** — выход
+- **Escape** на оверлее — выход
 - Первый запуск скачает модели Whisper (~150 MB + ~460 MB)
 
 ## Настройки (.env)
@@ -86,13 +90,14 @@ python -m src.main
 | Переменная | Описание |
 |------------|----------|
 | `DEEPSEEK_API_KEY` | Ключ API DeepSeek |
-| `TEAM_AUDIO_DEVICE` | BlackHole input — голос команды |
-| `MIC_INPUT_DEVICE` | Ваш микрофон (по умолчанию — системный) |
-| `VIRTUAL_MIC_DEVICE` | BlackHole output — виртуальный мик для Steam |
-| `WHISPER_MODEL_IN` | Модель для EN (`small.en` рекомендуется) |
-| `WHISPER_MODEL_OUT` | Модель для RU (`small` — мультиязычная) |
-| `TTS_VOICE` | Голос Edge TTS (`en-US-GuyNeural`, `en-US-JennyNeural`) |
-| `ENABLE_OUTGOING` | Включить RU→EN (`true`/`false`) |
+| `TEAM_LOOPBACK` | Захват звука игры через WASAPI (`true` на Windows по умолчанию) |
+| `TEAM_AUDIO_DEVICE` | Индекс устройства **вывода** для loopback (наушники) |
+| `MIC_INPUT_DEVICE` | Ваш микрофон |
+| `VIRTUAL_MIC_DEVICE` | **CABLE Input** — виртуальный мик для Steam |
+| `WHISPER_MODEL_IN` | Модель для EN (`small.en`) |
+| `WHISPER_MODEL_OUT` | Модель для RU (`small`) |
+| `TTS_VOICE` | Голос Edge TTS |
+| `ENABLE_OUTGOING` | RU→EN голос (`true`/`false`) |
 | `SHOW_ORIGINAL` | Показывать английский над субтитрами |
 
 ## Советы для CS2
@@ -100,11 +105,44 @@ python -m src.main
 - Говорите **коротко**: «Раш B», «Флеш», «Один на A»
 - `small.en` + `small` — баланс скорости и качества
 - Задержка исходящего ~2–4 сек — используйте push-to-talk
-- Если команда не слышит вас — проверьте `VIRTUAL_MIC_DEVICE` и микрофон в Steam
+- Если команда не слышит — проверьте `VIRTUAL_MIC_DEVICE` и микрофон в Steam (CABLE Output)
+- Приложение **не внедряется в игру** — VAC-safe
+
+## macOS
+
+<details>
+<summary>Инструкция для macOS</summary>
+
+### Требования
+
+- [BlackHole 2ch](https://existential.audio/blackhole/)
+
+### Настройка
+
+1. Создайте **Multi-Output Device** (BlackHole + наушники) в Audio MIDI Setup
+2. В `.env`:
+   ```env
+   TEAM_LOOPBACK=false
+   TEAM_AUDIO_DEVICE=2    # BlackHole input
+   VIRTUAL_MIC_DEVICE=3   # BlackHole output
+   ```
+3. Steam → Voice Input → BlackHole 2ch
+
+### Запуск
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m src.main
+```
+
+</details>
 
 ## Дорожная карта
 
 - [x] EN → RU субтитры (оверлей)
 - [x] RU → EN голос в виртуальный микрофон
+- [x] Windows WASAPI loopback
 - [ ] Горячие клавиши, настройка позиции оверлея
 - [ ] Игровой словарь CS2

@@ -5,6 +5,7 @@ import threading
 from src.audio import AudioCapture, list_audio_devices
 from src.config import Settings
 from src.overlay import SubtitleOverlay
+from src.platform_util import is_macos, is_windows
 from src.stt import SpeechToText
 from src.translate import Translator
 from src.tts import TextToSpeech
@@ -29,6 +30,7 @@ class App:
             self._on_team_segment,
             device=settings.team_audio_device,
             label="team",
+            loopback=settings.team_loopback,
         )
         self.mic_capture = AudioCapture(
             self._on_mic_segment,
@@ -83,9 +85,19 @@ class App:
 
     def run(self) -> None:
         print("[app] Starting. Press Escape on overlay to quit.")
+        if self.settings.team_loopback:
+            if is_windows():
+                print("[app] Team audio: WASAPI loopback (game/system sound)")
+            else:
+                print("[error] TEAM_LOOPBACK=true works only on Windows.")
+                print("        On macOS set TEAM_LOOPBACK=false and use BlackHole (see README).")
+                sys.exit(1)
         if self.settings.enable_outgoing and self.settings.virtual_mic_device is None:
             print("[warn] VIRTUAL_MIC_DEVICE not set — TTS will use default output.")
-            print("       Set it to BlackHole output so Steam can use it as mic.")
+            if is_windows():
+                print("       Set it to CABLE Input (VB-Audio) so Steam can use CABLE Output as mic.")
+            elif is_macos():
+                print("       Set it to BlackHole output so Steam can use it as mic.")
         self.team_capture.start()
         if self.settings.enable_outgoing:
             self.mic_capture.start()

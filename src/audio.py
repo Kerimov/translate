@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
 
-from src.config import CHANNELS, FRAME_SAMPLES, SAMPLE_RATE
+from src.config import CHANNELS, FRAME_MS, SAMPLE_RATE, FRAME_SAMPLES
+from src.platform_util import is_macos, is_windows, resample_audio
 
 
 class SpeechSegmenter:
@@ -63,6 +65,19 @@ class SpeechSegmenter:
         self._in_speech = False
 
 
+def _resolve_loopback_device(device: int | None) -> tuple[int, int, int]:
+    """Return (device_index, sample_rate, channels) for WASAPI loopback capture."""
+    if device is None:
+        info = sd.query_devices(kind="output")
+    else:
+        info = sd.query_devices(device)
+
+    index = info["index"]
+    sample_rate = int(info["default_samplerate"])
+    channels = min(2, max(1, info["max_output_channels"]))
+    return index, sample_rate, channels
+
+
 class AudioCapture:
     def __init__(
         self,
@@ -70,10 +85,20 @@ class AudioCapture:
         *,
         device: int | None = None,
         label: str = "audio",
+        loopback: bool = False,
     ) -> None:
         self.device = device
         self.label = label
-        self.segmenter = SpeechSegmenter(on_segment)
+        self.loopback = loopback
+        self.capture_rate = SAMPLE_RATE
+        self.capture_channels = CHANNELS
+
+        def deliver(audio: np.ndarray) -> None:
+            if self.capture_rate != SAMPLE_RATE:
+                audio = resample_audio(audio, self.capture_rate, SAMPLE_RATE)
+            on_segment(audio)
+
+        self.segmenter = SpeechSegmenter(deliver)
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: sd.InputStream | None = None
         self._worker: threading.Thread | None = None
@@ -84,16 +109,45 @@ class AudioCapture:
         self._worker = threading.Thread(target=self._process_loop, daemon=True)
         self._worker.start()
 
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="float32",
-            blocksize=FRAME_SAMPLES,
-            device=self.device,
-            callback=self._callback,
-        )
+        stream_kwargs: dict = {
+            "dtype": "float32",
+            "callback": self._callback,
+        }
+
+        if self.loopback:
+            if not is_windows():
+                raise RuntimeError("WASAPI loopback is only supported on Windows.")
+            device_index, sample_rate, channels = _resolve_loopback_device(self.device)
+            self.device = device_index
+            self.capture_rate = sample_rate
+            self.capture_channels = channels
+            blocksize = max(1, sample_rate * FRAME_MS // 1000)
+            stream_kwargs.update(
+                {
+                    "device": device_index,
+                    "samplerate": sample_rate,
+                    "channels": channels,
+                    "blocksize": blocksize,
+                    "extra_settings": sd.WasapiSettings(loopback=True),
+                }
+            )
+            print(
+                f"[{self.label}] WASAPI loopback from output device {device_index} "
+                f"({sample_rate} Hz, {channels} ch)"
+            )
+        else:
+            stream_kwargs.update(
+                {
+                    "samplerate": SAMPLE_RATE,
+                    "channels": CHANNELS,
+                    "blocksize": FRAME_SAMPLES,
+                    "device": self.device,
+                }
+            )
+            print(f"[{self.label}] Capturing from input device {self.device!r}")
+
+        self._stream = sd.InputStream(**stream_kwargs)
         self._stream.start()
-        print(f"[{self.label}] Capturing from device {self.device!r}")
 
     def stop(self) -> None:
         self._running = False
@@ -106,8 +160,12 @@ class AudioCapture:
 
     def _callback(self, indata, _frames, _time, status) -> None:
         if status:
-            print(f"[audio] {status}")
-        self._queue.put(indata[:, 0].copy())
+            print(f"[{self.label}] {status}")
+        if indata.ndim > 1 and indata.shape[1] > 1:
+            frame = indata.mean(axis=1)
+        else:
+            frame = indata[:, 0]
+        self._queue.put(frame.copy())
 
     def _process_loop(self) -> None:
         while self._running:
@@ -119,7 +177,43 @@ class AudioCapture:
 
 
 def list_audio_devices() -> None:
-    devices = sd.query_devices()
-    print(devices)
-    print("\nTip: use TEAM_AUDIO_DEVICE for game voice (BlackHole input),")
-    print("     MIC_INPUT_DEVICE for your mic, VIRTUAL_MIC_DEVICE for BlackHole output (Steam mic).")
+    hostapis = sd.query_hostapis()
+    print("Host APIs:")
+    for api in hostapis:
+        print(f"  [{api['index']}] {api['name']}")
+
+    print("\nDevices:")
+    for index, device in enumerate(sd.query_devices()):
+        in_ch = device["max_input_channels"]
+        out_ch = device["max_output_channels"]
+        kind = []
+        if in_ch > 0:
+            kind.append("in")
+        if out_ch > 0:
+            kind.append("out")
+        default = []
+        if index == sd.default.device[0]:
+            default.append("default-in")
+        if index == sd.default.device[1]:
+            default.append("default-out")
+        flags = f" ({', '.join(default)})" if default else ""
+        print(
+            f"  [{index}] {device['name']} "
+            f"[{'/'.join(kind) or '-'}, {int(device['default_samplerate'])} Hz]{flags}"
+        )
+
+    print()
+    if is_windows():
+        print("Windows tips:")
+        print("  TEAM_LOOPBACK=true       — захват звука игры через WASAPI loopback (по умолчанию)")
+        print("  TEAM_AUDIO_DEVICE=N      — индекс устройства вывода (наушники/динамики) для loopback")
+        print("  MIC_INPUT_DEVICE=N       — ваш микрофон")
+        print("  VIRTUAL_MIC_DEVICE=N     — CABLE Input (VB-Audio) для голоса в Steam")
+        print("  Steam → Settings → Voice → CABLE Output (VB-Audio Virtual Cable)")
+    elif is_macos():
+        print("macOS tips:")
+        print("  TEAM_AUDIO_DEVICE=N      — BlackHole input (голос команды)")
+        print("  MIC_INPUT_DEVICE=N       — ваш микрофон")
+        print("  VIRTUAL_MIC_DEVICE=N     — BlackHole output (Steam mic)")
+    else:
+        print("Set TEAM_AUDIO_DEVICE, MIC_INPUT_DEVICE, VIRTUAL_MIC_DEVICE in .env")

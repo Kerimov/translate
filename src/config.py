@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+from src.platform_util import default_team_loopback
+
 load_dotenv()
 
 SAMPLE_RATE = 16_000
@@ -39,6 +41,7 @@ def _parse_device(name: str) -> int | None:
 class Settings:
     deepseek_api_key: str
     team_audio_device: int | None
+    team_loopback: bool
     mic_input_device: int | None
     virtual_mic_device: int | None
     whisper_model_in: str
@@ -54,6 +57,7 @@ class Settings:
         return cls(
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             team_audio_device=team_device,
+            team_loopback=default_team_loopback(),
             mic_input_device=_parse_device("MIC_INPUT_DEVICE"),
             virtual_mic_device=_parse_device("VIRTUAL_MIC_DEVICE"),
             whisper_model_in=os.getenv("WHISPER_MODEL_IN", os.getenv("WHISPER_MODEL", "small.en")),
