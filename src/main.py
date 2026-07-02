@@ -6,9 +6,11 @@ from src.audio import AudioCapture, list_audio_devices
 from src.config import Settings
 from src.overlay import SubtitleOverlay
 from src.platform_util import is_macos, is_windows
+from src.segment_worker import SegmentQueueWorker
 from src.stt import SpeechToText
 from src.translate import Translator
 from src.tts import TextToSpeech
+from src.voice_audio import enhance_voice, is_mostly_speech
 
 
 class App:
@@ -18,7 +20,9 @@ class App:
             show_original=settings.show_original,
             enable_outgoing=settings.enable_outgoing,
         )
-        self.stt_in = SpeechToText(settings.whisper_model_in, label="stt-in")
+        self.stt_in = SpeechToText(
+            settings.whisper_model_in, label="stt-in", for_loopback=True
+        )
         self.translator = Translator(settings.deepseek_api_key)
         self.stt_out: SpeechToText | None = None
         self.tts: TextToSpeech | None = None
@@ -28,16 +32,17 @@ class App:
             self.stt_out = SpeechToText(settings.whisper_model_out, label="stt-out")
             self.tts = TextToSpeech(settings.tts_voice, settings.virtual_mic_device)
 
-        self._incoming_lock = threading.Lock()
         self._outgoing_lock = threading.Lock()
+        self._team_worker = SegmentQueueWorker(self._stt_team_segment)
 
         self.team_capture = AudioCapture(
-            self._on_team_segment,
+            self._team_worker.submit,
             device=settings.team_audio_device,
             label="team",
             loopback=settings.team_loopback,
             silence_frames=settings.segment_silence_frames,
             min_speech_frames=settings.segment_min_speech_frames,
+            energy_threshold=0.004 if settings.team_loopback else 0.008,
         )
         if settings.enable_outgoing:
             self.mic_capture = AudioCapture(
@@ -48,28 +53,33 @@ class App:
                 min_speech_frames=settings.segment_min_speech_frames,
             )
 
-    def _on_team_segment(self, audio) -> None:
-        if not self._incoming_lock.acquire(blocking=False):
-            return
+    def _stt_team_segment(self, audio) -> None:
+        try:
+            if not is_mostly_speech(audio):
+                return
+            audio = enhance_voice(audio)
+            self.overlay.show_incoming_progress("Распознаю...")
+            text = self.stt_in.transcribe(audio, language="en")
+            if not text:
+                return
+            print(f"[team en] {text}")
+            self.overlay.show_incoming(text, "…")
+            threading.Thread(
+                target=self._translate_team,
+                args=(text,),
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            print(f"[error/in] {exc}")
+            self.overlay.show_error(str(exc))
 
-        def work() -> None:
-            try:
-                self.overlay.show_incoming_progress("Распознаю...")
-                text = self.stt_in.transcribe(audio, language="en")
-                if not text:
-                    return
-                print(f"[team en] {text}")
-                self.overlay.show_incoming(text, "…")
-                translated = self.translator.translate(text, direction="en_to_ru")
-                print(f"[team ru] {translated}")
-                self.overlay.show_incoming(text, translated)
-            except Exception as exc:
-                print(f"[error/in] {exc}")
-                self.overlay.show_error(str(exc))
-            finally:
-                self._incoming_lock.release()
-
-        threading.Thread(target=work, daemon=True).start()
+    def _translate_team(self, text: str) -> None:
+        try:
+            translated = self.translator.translate(text, direction="en_to_ru")
+            print(f"[team ru] {translated}")
+            self.overlay.show_incoming(text, translated)
+        except Exception as exc:
+            print(f"[error/translate] {exc}")
 
     def _on_mic_segment(self, audio) -> None:
         if not self.settings.enable_outgoing:
@@ -106,6 +116,7 @@ class App:
         if self.settings.team_loopback:
             if is_windows():
                 print("[app] Team audio: WASAPI loopback (game/system sound)")
+                print("[tip] В CS2: громкость голоса команды выше, звуки игры ниже")
             else:
                 print("[error] TEAM_LOOPBACK=true works only on Windows.")
                 print("        On macOS set TEAM_LOOPBACK=false and use BlackHole (see README).")

@@ -11,6 +11,7 @@ import sounddevice as sd
 from src.config import CHANNELS, FRAME_MS, SAMPLE_RATE, FRAME_SAMPLES
 from src.devices import is_virtual_cable_output
 from src.platform_util import is_macos, is_windows, resample_audio
+from src.voice_audio import speech_energy
 
 
 class SpeechSegmenter:
@@ -20,16 +21,20 @@ class SpeechSegmenter:
         self,
         on_segment: Callable[[np.ndarray], None],
         *,
-        energy_threshold: float = 0.012,
-        silence_frames: int = 12,
-        min_speech_frames: int = 5,
+        energy_threshold: float = 0.008,
+        silence_frames: int = 16,
+        min_speech_frames: int = 6,
         max_frames: int = 500,
+        voice_only: bool = False,
+        sample_rate: int = SAMPLE_RATE,
     ) -> None:
         self.on_segment = on_segment
         self.energy_threshold = energy_threshold
         self.silence_frames = silence_frames
         self.min_speech_frames = min_speech_frames
         self.max_frames = max_frames
+        self.voice_only = voice_only
+        self.sample_rate = sample_rate
 
         self._buffer: list[np.ndarray] = []
         self._speech_frames = 0
@@ -37,8 +42,13 @@ class SpeechSegmenter:
         self._in_speech = False
 
     def push(self, frame: np.ndarray) -> None:
-        energy = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-        is_speech = energy > self.energy_threshold
+        if self.voice_only:
+            energy = speech_energy(frame, self.sample_rate)
+            threshold = self.energy_threshold
+        else:
+            energy = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
+            threshold = self.energy_threshold
+        is_speech = energy > threshold
 
         if is_speech:
             self._in_speech = True
@@ -142,8 +152,10 @@ class AudioCapture:
         device: int | None = None,
         label: str = "audio",
         loopback: bool = False,
-        silence_frames: int = 12,
-        min_speech_frames: int = 5,
+        silence_frames: int = 16,
+        min_speech_frames: int = 6,
+        energy_threshold: float = 0.008,
+        voice_only: bool = False,
     ) -> None:
         self.device = device
         self.label = label
@@ -160,6 +172,9 @@ class AudioCapture:
             deliver,
             silence_frames=silence_frames,
             min_speech_frames=min_speech_frames,
+            energy_threshold=energy_threshold,
+            voice_only=voice_only or loopback,
+            sample_rate=SAMPLE_RATE,
         )
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream: sd.InputStream | None = None
@@ -207,6 +222,7 @@ class AudioCapture:
             )
             print(f"[{self.label}] Capturing from input device {self.device!r}")
 
+        self.segmenter.sample_rate = self.capture_rate
         self._stream = sd.InputStream(**stream_kwargs)
         self._stream.start()
 

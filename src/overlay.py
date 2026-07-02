@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import queue
+from collections import deque
+
 import tkinter as tk
 from dataclasses import dataclass
 
@@ -60,11 +62,23 @@ class SubtitleOverlay:
             text="Слушаю команду...",
             fg="#ffffff",
             bg="#111111",
-            font=("Helvetica", 20, "bold"),
+            font=("Helvetica", 18, "bold"),
             wraplength=width - 40,
             justify="center",
         )
-        self.incoming_label.pack(pady=(0, 6), padx=20)
+        self.incoming_label.pack(pady=(0, 2), padx=20)
+
+        self.history_label = tk.Label(
+            self.root,
+            text="",
+            fg="#666666",
+            bg="#111111",
+            font=("Helvetica", 12),
+            wraplength=width - 40,
+            justify="center",
+        )
+        self.history_label.pack(pady=(0, 6), padx=20)
+        self._history: deque[str] = deque(maxlen=2)
 
         if enable_outgoing:
             self.outgoing_header = tk.Label(
@@ -124,7 +138,17 @@ class SubtitleOverlay:
                         self.original_label.config(text=update.original)
                     else:
                         self.original_label.config(text="")
-                    self.incoming_label.config(text=update.translated or "...")
+                    translated = update.translated or "..."
+                    if translated not in ("…", "...", "Распознаю..."):
+                        if (
+                            self.incoming_label.cget("text")
+                            not in ("Слушаю команду...", "Распознаю...", "…", "...")
+                        ):
+                            self._history.append(self.incoming_label.cget("text"))
+                        self.history_label.config(
+                            text="\n".join(self._history) if self._history else ""
+                        )
+                    self.incoming_label.config(text=translated)
                 elif update.kind == "incoming_progress":
                     self.original_label.config(text="")
                     self.incoming_label.config(text=update.translated)

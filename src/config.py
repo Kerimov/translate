@@ -7,6 +7,56 @@ from dotenv import load_dotenv
 
 from src.platform_util import default_team_loopback
 
+_SLOW_CPU_MODELS = frozenset(
+    {"medium.en", "medium", "large-v3", "large-v3-turbo", "large"}
+)
+
+
+def _whisper_backend() -> str:
+    device = os.getenv("WHISPER_DEVICE", "auto").strip().lower()
+    if device == "cpu":
+        return "cpu"
+    if device == "cuda":
+        return "cuda"
+    try:
+        import ctranslate2
+
+        if ctranslate2.get_cuda_device_count() > 0:
+            import ctypes
+            import sys
+
+            if sys.platform == "win32":
+                for name in ("cublas64_12.dll", "cublas64_11.dll", "cublas64_10.dll"):
+                    try:
+                        ctypes.WinDLL(name)
+                        return "cuda"
+                    except OSError:
+                        continue
+                return "cpu"
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _resolve_whisper_model_in(explicit: str | None, *, fast_mode: bool, quality_mode: bool) -> str:
+    if explicit:
+        model = explicit
+    elif fast_mode:
+        model = "base.en"
+    elif quality_mode and _whisper_backend() == "cuda":
+        model = "medium.en"
+    else:
+        model = "small.en"
+
+    if _whisper_backend() == "cpu" and model in _SLOW_CPU_MODELS:
+        print(
+            f"[config] {model} на CPU слишком медленно для live-чата, "
+            "использую small.en (или установите CUDA 12 + WHISPER_DEVICE=cuda)"
+        )
+        return "small.en"
+    return model
+
 load_dotenv()
 
 SAMPLE_RATE = 16_000
@@ -69,9 +119,13 @@ class Settings:
     @classmethod
     def load(cls) -> "Settings":
         fast_mode = _parse_bool("FAST_MODE", False)
+        quality_mode = _parse_bool("QUALITY_MODE", True)
         # Backward compat: AUDIO_INPUT_DEVICE → TEAM_AUDIO_DEVICE
         team_device = _parse_device("TEAM_AUDIO_DEVICE") or _parse_device("AUDIO_INPUT_DEVICE")
-        default_model_in = "base.en" if fast_mode else "small.en"
+        explicit_in = os.getenv("WHISPER_MODEL_IN") or os.getenv("WHISPER_MODEL")
+        model_in = _resolve_whisper_model_in(
+            explicit_in, fast_mode=fast_mode, quality_mode=quality_mode
+        )
         default_model_out = "base" if fast_mode else "small"
         return cls(
             deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
@@ -79,15 +133,17 @@ class Settings:
             team_loopback=default_team_loopback(),
             mic_input_device=_parse_device("MIC_INPUT_DEVICE"),
             virtual_mic_device=_parse_device("VIRTUAL_MIC_DEVICE"),
-            whisper_model_in=os.getenv("WHISPER_MODEL_IN", os.getenv("WHISPER_MODEL", default_model_in)),
+            whisper_model_in=model_in,
             whisper_model_out=os.getenv("WHISPER_MODEL_OUT", default_model_out),
             show_original=os.getenv("SHOW_ORIGINAL", "true").lower() == "true",
             enable_outgoing=os.getenv("ENABLE_OUTGOING", "true").lower() == "true",
             tts_voice=os.getenv("TTS_VOICE", "en-US-GuyNeural"),
             segment_silence_frames=_parse_int(
-                "SEGMENT_SILENCE_FRAMES", 8 if fast_mode else 12
+                "SEGMENT_SILENCE_FRAMES",
+                8 if fast_mode else 12,
             ),
             segment_min_speech_frames=_parse_int(
-                "SEGMENT_MIN_SPEECH_FRAMES", 4 if fast_mode else 5
+                "SEGMENT_MIN_SPEECH_FRAMES",
+                4 if fast_mode else 5,
             ),
         )

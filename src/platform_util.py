@@ -19,9 +19,28 @@ def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int = SAMPLE_RATE
     if orig_sr == target_sr or audio.size == 0:
         return audio.astype(np.float32, copy=False)
 
-    target_len = max(1, int(len(audio) * target_sr / orig_sr))
-    indices = np.linspace(0, len(audio) - 1, target_len)
-    return np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
+    if orig_sr > target_sr and orig_sr % target_sr == 0:
+        factor = orig_sr // target_sr
+        trimmed = len(audio) - (len(audio) % factor)
+        if trimmed <= 0:
+            return audio.astype(np.float32, copy=False)
+        return audio[:trimmed].reshape(-1, factor).mean(axis=1).astype(np.float32)
+
+    from math import gcd
+
+    from scipy.signal import resample_poly
+
+    divisor = gcd(orig_sr, target_sr)
+    return resample_poly(audio, target_sr // divisor, orig_sr // divisor).astype(np.float32)
+
+
+def normalize_audio(audio: np.ndarray, target_peak: float = 0.92) -> np.ndarray:
+    if audio.size == 0:
+        return audio
+    peak = float(np.max(np.abs(audio)))
+    if peak < 1e-6:
+        return audio.astype(np.float32, copy=False)
+    return (audio * (target_peak / peak)).astype(np.float32)
 
 
 def default_team_loopback() -> bool:
